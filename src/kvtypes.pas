@@ -14,6 +14,17 @@ type
 
   TKVCellKind = (ckPic, ckText);
 
+  TKVCapPos = (cpTop, cpMiddle, cpBottom);
+
+  { A caption or subcaption line of a cover. Present is True when the line was
+    written, even if it has no text (that only earns a warning). }
+  TKVCaption = record
+    Present: Boolean;
+    Pos: TKVCapPos;
+    Text: string;       // escapes already resolved
+    Line: Integer;
+  end;
+
   TKVCell = record
     Kind: TKVCellKind;
     Path: string;       // pic: the path as written in the conf
@@ -42,6 +53,9 @@ type
     Title: string;
     Front, Back: string;            // cover paths, '' = none
     FrontLine, BackLine: Integer;
+    FrontAnchor, BackAnchor: TKVAnchor;
+    FrontCaption, FrontSubcaption: TKVCaption;
+    BackCaption, BackSubcaption: TKVCaption;
     Rows, Cols: Integer;
     Portrait, Landscape: TKVSize;
     PortraitLine, LandscapeLine: Integer;
@@ -71,11 +85,14 @@ type
 
 function KVAnchorName(AAnchor: TKVAnchor): string;
 function KVParseAnchor(const S: string; out AAnchor: TKVAnchor): Boolean;
+function KVCapPosName(APos: TKVCapPos): string;
+function KVParseCapPos(const S: string; out APos: TKVCapPos): Boolean;
 
 implementation
 
 const
   AnchorNames: array[TKVAnchor] of string = ('C', 'TL', 'TR', 'BL', 'BR');
+  CapPosNames: array[TKVCapPos] of string = ('top', 'middle', 'bottom');
 
 function KVAnchorName(AAnchor: TKVAnchor): string;
 begin
@@ -95,6 +112,24 @@ begin
   Result := False;
 end;
 
+function KVCapPosName(APos: TKVCapPos): string;
+begin
+  Result := CapPosNames[APos];
+end;
+
+function KVParseCapPos(const S: string; out APos: TKVCapPos): Boolean;
+var
+  P: TKVCapPos;
+begin
+  for P := Low(TKVCapPos) to High(TKVCapPos) do
+    if S = CapPosNames[P] then
+    begin
+      APos := P;
+      Exit(True);
+    end;
+  Result := False;
+end;
+
 { TKVPage }
 
 procedure TKVPage.AddCell(const ACell: TKVCell);
@@ -109,6 +144,8 @@ constructor TKVPhotobook.Create;
 begin
   inherited Create;
   Pages := TObjectList.Create(True);
+  FrontAnchor := kaC;
+  BackAnchor := kaC;
 end;
 
 destructor TKVPhotobook.Destroy;

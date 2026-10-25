@@ -55,7 +55,9 @@ type
     function CellToJSON(const Cell: TKVCell): TJSONObject;
     function PageToJSON(Page: TKVPage): TJSONObject;
     function SizeToJSON(const S: TKVSize): TJSONObject;
-    function CoverToJSON(const Path: string; Line: Integer): TJSONData;
+    function CaptionToJSON(const Cap: TKVCaption; WithPosition: Boolean): TJSONData;
+    function CoverToJSON(const Path: string; Line: Integer; Anchor: TKVAnchor;
+      const Cap, Sub: TKVCaption): TJSONData;
     function BookToJSON: TJSONObject;
     procedure CountJobs;
   public
@@ -315,19 +317,37 @@ begin
   end;
 end;
 
-{ Covers are cut to the rows x columns grid; the viewer trims them to the page. }
-function TBuilder.CoverToJSON(const Path: string; Line: Integer): TJSONData;
+{ The caption is kept while it is written, even without a text: a subcaption
+  needs its position. A subcaption without a text is nothing. }
+function TBuilder.CaptionToJSON(const Cap: TKVCaption; WithPosition: Boolean): TJSONData;
+var
+  O: TJSONObject;
+begin
+  if (not Cap.Present) or ((Cap.Text = '') and not WithPosition) then Exit(TJSONNull.Create);
+  O := TJSONObject.Create;
+  if WithPosition then O.Add('position', KVCapPosName(Cap.Pos));
+  O.Add('text', Cap.Text);
+  Result := O;
+end;
+
+{ A cover is cut to the size of one cell box, as a page with layout 1x1 would be;
+  whatever the layout, the viewer fits it to the page. }
+function TBuilder.CoverToJSON(const Path: string; Line: Integer; Anchor: TKVAnchor;
+  const Cap, Sub: TKVCaption): TJSONData;
 var
   O: TJSONObject;
   W, H: Integer;
 begin
   if Path = '' then Exit(TJSONNull.Create);
-  W := FPB.Cols * Max(FPB.Portrait.W, FPB.Landscape.W);
-  H := FPB.Rows * Max(FPB.Portrait.H, FPB.Landscape.H);
+  W := Max(FPB.Portrait.W, FPB.Landscape.W);
+  H := Max(FPB.Portrait.H, FPB.Landscape.H);
   O := TJSONObject.Create;
   try
-    O.Add('src', Render(Path, Line, W, H, kaC, 'cover-'));
+    O.Add('src', Render(Path, Line, W, H, Anchor, 'cover-'));
     O.Add('alt', ChangeFileExt(ExtractFileName(Path), ''));
+    O.Add('crop', KVAnchorName(Anchor));
+    O.Add('caption', CaptionToJSON(Cap, True));
+    O.Add('subcaption', CaptionToJSON(Sub, False));
   except
     O.Free;
     raise;
@@ -345,8 +365,8 @@ begin
   // only for the "[n/total]" in the progress lines; a rough count is fine
   Seen := specialize TDictionary<string, Boolean>.Create;
   try
-    if FPB.Front <> '' then Seen.AddOrSetValue('front', True);
-    if FPB.Back <> '' then Seen.AddOrSetValue('back', True);
+    if FPB.Front <> '' then Seen.AddOrSetValue('front|' + KVAnchorName(FPB.FrontAnchor), True);
+    if FPB.Back <> '' then Seen.AddOrSetValue('back|' + KVAnchorName(FPB.BackAnchor), True);
     for I := 0 to FPB.Pages.Count - 1 do
     begin
       Page := FPB.Page(I);
@@ -375,8 +395,10 @@ begin
     Result.Add('columns', FPB.Cols);
     Result.Add('portrait', SizeToJSON(FPB.Portrait));
     Result.Add('landscape', SizeToJSON(FPB.Landscape));
-    Result.Add('front', CoverToJSON(FPB.Front, FPB.FrontLine));
-    Result.Add('back', CoverToJSON(FPB.Back, FPB.BackLine));
+    Result.Add('front', CoverToJSON(FPB.Front, FPB.FrontLine, FPB.FrontAnchor,
+      FPB.FrontCaption, FPB.FrontSubcaption));
+    Result.Add('back', CoverToJSON(FPB.Back, FPB.BackLine, FPB.BackAnchor,
+      FPB.BackCaption, FPB.BackSubcaption));
     Pages := TJSONArray.Create;
     Result.Add('pages', Pages);
     for I := 0 to FPB.Pages.Count - 1 do

@@ -109,6 +109,14 @@ begin
       AssertEquals('landscape', Book.Arrays['pages'].Objects[1].Arrays['cells'].Objects[3].Strings['orient']);
       AssertEquals('Words'#10'and more', Book.Arrays['pages'].Objects[2].Strings['text']);
       AssertFalse(Book.Objects['front'].Strings['src'] = '');
+      AssertEquals('TL', Book.Objects['front'].Strings['crop']);
+      AssertEquals('middle', Book.Objects['front'].Objects['caption'].Strings['position']);
+      AssertEquals('Hello,'#10'kuvascript', Book.Objects['front'].Objects['caption'].Strings['text']);
+      AssertEquals('a tiny photobook', Book.Objects['front'].Objects['subcaption'].Strings['text']);
+      AssertEquals('bottom', Book.Objects['back'].Objects['caption'].Strings['position']);
+      AssertEquals('BR', Book.Objects['back'].Strings['crop']);
+      AssertEquals('The end '#92'o/', Book.Objects['back'].Objects['caption'].Strings['text']);
+      AssertTrue(Book.Objects['back'].Find('subcaption').IsNull);
       AssertTrue(FileExists(Out_ + PathDelim + StringReplace(Book.Objects['front'].Strings['src'], '/', PathDelim, [])));
     finally
       Data.Free;

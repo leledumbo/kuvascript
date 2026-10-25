@@ -49,6 +49,9 @@ type
     function ParseCount(const Tok, What: string; Line, Lo, Hi: Integer; out V: Integer): Boolean;
     function ParseSize(const St: TStmt; const Rest, KW: string; out Size: TKVSize): Boolean;
     function ParseText(const Raw: string; Line: Integer; out S: string): Boolean;
+    function ParseCover(var St: TStmt; const KW: string; out Path: string; out Anchor: TKVAnchor;
+      out PathLine: Integer; out Cap, Sub: TKVCaption): Boolean;
+    function ParseCaption(const St: TStmt; const KW, Rest: string; WithPos: Boolean; out Cap: TKVCaption): Boolean;
     procedure ParsePic(const St: TStmt; const Rest: string);
     procedure AddCell(const ACell: TKVCell);
     procedure AddChapter(const St: TStmt; const Rest: string);
@@ -142,6 +145,28 @@ begin
     Start := I;
     while (I <= Length(S)) and not IsWS(S[I]) do Inc(I);
     if I > Start then Words.Add(Copy(S, Start, I - Start));
+  end;
+end;
+
+{ "crop <anchor> <path>" in front is crop, whatever the path looks like; anything
+  else is the path as it is. }
+procedure SplitCrop(const Rest: string; out Anchor: TKVAnchor; out Path: string);
+var
+  After, Tok: string;
+  Sp: Integer;
+begin
+  Anchor := kaC;
+  Path := Rest;
+  if TakeKeyword(Rest, 'crop', After) and (After <> '') then
+  begin
+    Sp := 1;
+    while (Sp <= Length(After)) and not IsWS(After[Sp]) do Inc(Sp);
+    Tok := Copy(After, 1, Sp - 1);
+    After := TrimWS(Copy(After, Sp, MaxInt));
+    if (After <> '') and KVParseAnchor(Tok, Anchor) then
+      Path := After
+    else
+      Anchor := kaC;
   end;
 end;
 
@@ -253,7 +278,8 @@ begin
   Result := TakeKeyword(St.Text, KW, Rest);
   if not Result then
     FDiag.Error(St.Line, Format(
-      'expected "%s" here, found "%s" (the config is title, [front], [back], layout, portrait, landscape, in that order)',
+      'expected "%s" here, found "%s" (the config is title, [front [caption [subcaption]]], ' +
+      '[back [caption [subcaption]]], layout, portrait, landscape, in that order)',
       [Usage, FirstWord(St.Text)]));
 end;
 
@@ -277,6 +303,91 @@ begin
   finally
     Words.Free;
   end;
+end;
+
+{ "caption <top|middle|bottom> [<text>]" or "subcaption [<text>]" (WithPos is
+  False). A missing text only warns: there is simply nothing to render. }
+function TParser.ParseCaption(const St: TStmt; const KW, Rest: string; WithPos: Boolean;
+  out Cap: TKVCaption): Boolean;
+var
+  PosWord, Raw: string;
+begin
+  Result := False;
+  Cap.Present := True;
+  Cap.Line := St.Line;
+  Cap.Text := '';
+  Cap.Pos := cpTop;
+  Raw := Rest;
+  if WithPos then
+  begin
+    PosWord := FirstWord(Rest);
+    if not KVParseCapPos(PosWord, Cap.Pos) then
+    begin
+      if PosWord = '' then
+        FDiag.Error(St.Line, Format('%s needs a position (top, middle or bottom) and a text', [KW]))
+      else
+        FDiag.Error(St.Line, Format('%s needs top, middle or bottom first, found "%s"', [KW, PosWord]));
+      Exit;
+    end;
+    Raw := TrimWS(Copy(Rest, Length(PosWord) + 1, MaxInt));
+  end;
+  if Raw = '' then
+  begin
+    FDiag.Warn(St.Line, Format('%s has no text, so nothing will be rendered', [KW]));
+    Exit(True);
+  end;
+  Result := ParseText(Raw, St.Line, Cap.Text);
+end;
+
+{ St is a "front" or "back" statement. Reads it, its optional caption and its
+  optional subcaption, and leaves St at the next statement after them. }
+function TParser.ParseCover(var St: TStmt; const KW: string; out Path: string; out Anchor: TKVAnchor;
+  out PathLine: Integer; out Cap, Sub: TKVCaption): Boolean;
+var
+  Rest, After: string;
+begin
+  Result := False;
+  Cap.Present := False;
+  Sub.Present := False;
+  TakeKeyword(St.Text, KW, Rest);
+  if Rest = '' then
+  begin
+    FDiag.Error(St.Line, KW + ' needs a path');
+    Exit;
+  end;
+  SplitCrop(Rest, Anchor, Path);
+  PathLine := St.Line;
+  if not NextStmt(St) then
+  begin
+    FDiag.Error(0, 'expected "layout rows <n> columns <n>"');
+    Exit;
+  end;
+
+  if TakeKeyword(St.Text, 'caption', After) then
+  begin
+    if not ParseCaption(St, 'caption', After, True, Cap) then Exit;
+    if not NextStmt(St) then
+    begin
+      FDiag.Error(0, 'expected "layout rows <n> columns <n>"');
+      Exit;
+    end;
+  end;
+
+  if TakeKeyword(St.Text, 'subcaption', After) then
+  begin
+    if not Cap.Present then
+    begin
+      FDiag.Error(St.Line, Format('subcaption must follow a caption (after %s)', [KW]));
+      Exit;
+    end;
+    if not ParseCaption(St, 'subcaption', After, False, Sub) then Exit;
+    if not NextStmt(St) then
+    begin
+      FDiag.Error(0, 'expected "layout rows <n> columns <n>"');
+      Exit;
+    end;
+  end;
+  Result := True;
 end;
 
 function TParser.ParseConfig: Boolean;
@@ -307,35 +418,19 @@ begin
   end;
 
   if TakeKeyword(St.Text, 'front', Rest) then
-  begin
-    if Rest = '' then
-    begin
-      FDiag.Error(St.Line, 'front needs a path');
-      Exit;
-    end;
-    FPB.Front := Rest;
-    FPB.FrontLine := St.Line;
-    if not NextStmt(St) then
-    begin
-      FDiag.Error(0, 'expected "layout rows <n> columns <n>"');
-      Exit;
-    end;
-  end;
+    if not ParseCover(St, 'front', FPB.Front, FPB.FrontAnchor, FPB.FrontLine,
+                      FPB.FrontCaption, FPB.FrontSubcaption) then Exit;
 
   if TakeKeyword(St.Text, 'back', Rest) then
+    if not ParseCover(St, 'back', FPB.Back, FPB.BackAnchor, FPB.BackLine,
+                      FPB.BackCaption, FPB.BackSubcaption) then Exit;
+
+  if (FirstWord(St.Text) = 'caption') or (FirstWord(St.Text) = 'subcaption') then
   begin
-    if Rest = '' then
-    begin
-      FDiag.Error(St.Line, 'back needs a path');
-      Exit;
-    end;
-    FPB.Back := Rest;
-    FPB.BackLine := St.Line;
-    if not NextStmt(St) then
-    begin
-      FDiag.Error(0, 'expected "layout rows <n> columns <n>"');
-      Exit;
-    end;
+    FDiag.Error(St.Line, Format(
+      '%s is not in the right place: it must directly follow front or back (a subcaption directly follows a caption)',
+      [FirstWord(St.Text)]));
+    Exit;
   end;
 
   if not ExpectKeyword(St, 'layout', 'layout rows <n> columns <n>', Rest) then Exit;
@@ -426,29 +521,15 @@ end;
 procedure TParser.ParsePic(const St: TStmt; const Rest: string);
 var
   Cell: TKVCell;
-  After, Tok, Path: string;
+  Path: string;
   Anch: TKVAnchor;
-  Sp: Integer;
 begin
   if Rest = '' then
   begin
     FDiag.Error(St.Line, 'pic needs a path');
     Exit;
   end;
-  Anch := kaC;
-  Path := Rest;
-  // "crop <anchor> " in front is crop, whatever the rest looks like
-  if TakeKeyword(Rest, 'crop', After) and (After <> '') then
-  begin
-    Sp := 1;
-    while (Sp <= Length(After)) and not IsWS(After[Sp]) do Inc(Sp);
-    Tok := Copy(After, 1, Sp - 1);
-    After := TrimWS(Copy(After, Sp, MaxInt));
-    if (After <> '') and KVParseAnchor(Tok, Anch) then
-      Path := After
-    else
-      Anch := kaC;
-  end;
+  SplitCrop(Rest, Anch, Path);
   Cell.Kind := ckPic;
   Cell.Path := Path;
   Cell.Anchor := Anch;
@@ -514,6 +595,7 @@ begin
       AddChapter(St, Rest)
     else if (FirstWord(St.Text) = 'title') or (FirstWord(St.Text) = 'front') or
             (FirstWord(St.Text) = 'back') or (FirstWord(St.Text) = 'layout') or
+            (FirstWord(St.Text) = 'caption') or (FirstWord(St.Text) = 'subcaption') or
             (FirstWord(St.Text) = 'portrait') or (FirstWord(St.Text) = 'landscape') then
       FDiag.Error(St.Line, Format('"%s" belongs to the config at the top of the file', [FirstWord(St.Text)]))
     else

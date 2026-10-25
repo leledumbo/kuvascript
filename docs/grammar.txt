@@ -1,11 +1,15 @@
 # Syntax (ISO 14977 EBNF; "? ... ?" is a special sequence)
 
 photobook   = { gap }, config, { gap | page } ;
-config      = title, [ front ], [ back ], layout, portrait, landscape ;
+config      = title, [ front, [ caption, [ subcaption ] ] ],
+                     [ back, [ caption, [ subcaption ] ] ],
+                     layout, portrait, landscape ;
 
 title       = line( "title", ws, text ) ;
-front       = line( "front", ws, path ) ;
-back        = line( "back", ws, path ) ;
+front       = line( "front", ws, [ "crop", ws, anchor, ws ], path ) ;
+back        = line( "back", ws, [ "crop", ws, anchor, ws ], path ) ;
+caption     = line( "caption", ws, position, [ ws, text ] ) ;
+subcaption  = line( "subcaption", [ ws, text ] ) ;
 layout      = line( "layout", ws, "rows", ws, grid_dim, ws, "columns", ws, grid_dim ) ;
 portrait    = line( "portrait", ws, "width", ws, number, ws, "height", ws, number ) ;
 landscape   = line( "landscape", ws, "width", ws, number, ws, "height", ws, number ) ;
@@ -23,6 +27,7 @@ blank       = line( ) ;
    the content, optional trailing whitespace, then end of line. *)
 line( x )   = [ ws ], x, [ ws ], eol ;
 
+position    = "top" | "middle" | "bottom" ;
 anchor      = "TL" | "TR" | "BL" | "BR" | "C" ;
 grid_dim    = "1" | "2" | "3" ;
 number      = digit_nz, { digit } ;
@@ -59,9 +64,10 @@ newline     = "\r\n" | "\n" | "\r" ;   (* lexer matches longest: "\r\n" is one n
 3. path in pic, front and back must be an existing file, relative to the directory holding
    photobook.conf. Paths are taken literally to the end of the line (spaces allowed,
    no escapes, trailing whitespace trimmed).
-   front / back are optional covers, scaled to cover the rows x columns grid area
-   (width = columns x cell width, height = rows x cell height) and cropped at the center.
-   Without them the book has no cover and starts directly with its first page.
+   front / back are optional covers. A cover is cut to one cell box (max portrait/landscape
+   width x max height), what a page with layout rows 1 columns 1 would hold, whatever the
+   layout is; the template fits it to the page. crop works as in pic (same prefix rule,
+   and the default is C). Without covers the book starts directly with its first page.
 4. crop picks which part of the picture is kept when it doesn't fit the cell:
    TL = top left, TR = top right, BL = bottom left, BR = bottom right, C = center.
    Defaults to C if omitted.
@@ -69,7 +75,8 @@ newline     = "\r\n" | "\n" | "\r" ;   (* lexer matches longest: "\r\n" is one n
    as a crop prefix (a file literally named like that must be given as ./crop TL x).
 5. In text, "\n" is a line break and "\\" is a literal backslash. Any other
    backslash sequence is an error. Leading and trailing whitespace is not part of the text.
-   This applies to title, text and chapter (comments are taken literally).
+   This applies to title, text, chapter, caption and subcaption (comments are taken
+   literally).
 6. A bare "text" is an empty cell (e.g. a place to sign when printed).
 7. Comments and blank lines are ignored; they never start a new page.
 8. A chapter occupies a whole page by itself. It may only appear when the
@@ -123,3 +130,19 @@ newline     = "\r\n" | "\n" | "\r" ;   (* lexer matches longest: "\r\n" is one n
    pic crop TL f8.jpg
    text again
    pic f9.jpg
+
+10. caption and subcaption write text on a cover. They belong to the config, so the order is
+    strict: a caption must directly follow the front or back line it belongs to, and a
+    subcaption must directly follow a caption. Anywhere else they are errors, e.g. a caption
+    right after title, a subcaption without a caption, or a caption inside the pages.
+    position says where on the cover the text goes: top, middle or bottom. The text is
+    whatever follows (escapes as in rule 5). A subcaption has no position of its own: the
+    template draws it right below the caption, smaller, so everything after the keyword is
+    its text. A caption with a position but no text, or a subcaption without text, is only
+    a warning: nothing is rendered for it. A missing caption position is an error.
+    Example:
+    front crop TL cover.jpg
+    caption bottom Memory of Semarang
+    subcaption July 2024
+    back crop BR end.jpg
+    caption middle Until next time

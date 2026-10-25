@@ -24,6 +24,12 @@ type
     procedure TextEscapes;
     procedure UnknownEscapeIsAnError;
     procedure Covers;
+    procedure CoverCrop;
+    procedure CoverCaptions;
+    procedure CaptionOutOfPlaceIsAnError;
+    procedure CaptionNeedsAPosition;
+    procedure CaptionWithoutTextOnlyWarns;
+    procedure SubcaptionHasNoPosition;
     procedure ConfigOrderIsStrict;
     procedure TitleMustBeFirst;
     procedure LayoutRange;
@@ -137,6 +143,91 @@ begin
   AssertNull(Parse('title T'#10'back b.png'#10'front f.png'#10'layout rows 1 columns 1'#10 +
     'portrait width 1 height 2'#10'landscape width 2 height 1'#10'pic a.jpg'));
   AssertErr('layout');
+end;
+
+const
+  Tail = 'layout rows 1 columns 1'#10'portrait width 4 height 8'#10'landscape width 4 height 3'#10'pic a.jpg';
+
+procedure TParserTests.CoverCrop;
+begin
+  AssertNotNull(Parse('title T'#10'front crop TL f.jpg'#10'back crop BR b.jpg'#10 + Tail));
+  AssertEquals('f.jpg', FPB.Front);
+  AssertTrue(FPB.FrontAnchor = kaTL);
+  AssertEquals('b.jpg', FPB.Back);
+  AssertTrue(FPB.BackAnchor = kaBR);
+  // like pic: a path that merely starts with "crop" stays a path, and C is the default
+  AssertNotNull(Parse('title T'#10'front crop f.jpg'#10 + Tail));
+  AssertEquals('crop f.jpg', FPB.Front);
+  AssertTrue(FPB.FrontAnchor = kaC);
+end;
+
+procedure TParserTests.CoverCaptions;
+begin
+  AssertNotNull(Parse('title T'#10'front f.jpg'#10'caption bottom Memory of\nSemarang'#10 +
+    'subcaption July 2024'#10'back b.jpg'#10'caption middle The end'#10 + Tail));
+  AssertEquals(0, FDiag.Warnings);
+  AssertTrue(FPB.FrontCaption.Present);
+  AssertTrue(FPB.FrontCaption.Pos = cpBottom);
+  AssertEquals('Memory of'#10'Semarang', FPB.FrontCaption.Text);
+  AssertEquals('July 2024', FPB.FrontSubcaption.Text);
+  AssertTrue(FPB.BackCaption.Pos = cpMiddle);
+  AssertEquals('The end', FPB.BackCaption.Text);
+  AssertFalse(FPB.BackSubcaption.Present);
+  // comments and blank lines may sit between them
+  AssertNotNull(Parse('title T'#10'front f.jpg'#10#10'-- hi'#10'caption top A'#10 + Tail));
+  AssertEquals('A', FPB.FrontCaption.Text);
+  AssertTrue(FPB.FrontCaption.Pos = cpTop);
+  // a caption after back belongs to the back, not to a missing front
+  AssertNotNull(Parse('title T'#10'back b.jpg'#10'caption top Z'#10 + Tail));
+  AssertFalse(FPB.FrontCaption.Present);
+  AssertEquals('Z', FPB.BackCaption.Text);
+end;
+
+procedure TParserTests.CaptionOutOfPlaceIsAnError;
+begin
+  AssertNull(Parse('title T'#10'caption top A'#10'front f.jpg'#10 + Tail));
+  AssertErr('caption is not in the right place');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'subcaption A'#10 + Tail));
+  AssertErr('subcaption must follow a caption');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'caption top A'#10'caption top B'#10 + Tail));
+  AssertErr('caption is not in the right place');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'subcaption A'#10'caption top B'#10 + Tail));
+  AssertErr('subcaption must follow a caption');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'caption top A'#10'subcaption B'#10 +
+    'subcaption C'#10 + Tail));
+  AssertErr('subcaption is not in the right place');
+  AssertNull(Parse('title T'#10 + Tail + #10'caption top A'));
+  AssertErr('belongs to the config');
+  AssertNull(Parse('title T'#10 + Tail + #10'subcaption A'));
+  AssertErr('belongs to the config');
+end;
+
+procedure TParserTests.CaptionNeedsAPosition;
+begin
+  AssertNull(Parse('title T'#10'front f.jpg'#10'caption'#10 + Tail));
+  AssertErr('caption needs a position');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'caption Hello there'#10 + Tail));
+  AssertErr('caption needs top, middle or bottom first, found "Hello"');
+  AssertNull(Parse('title T'#10'front f.jpg'#10'caption top bad \q'#10 + Tail));
+  AssertErr('unknown escape');
+end;
+
+procedure TParserTests.CaptionWithoutTextOnlyWarns;
+begin
+  AssertNotNull(Parse('title T'#10'front f.jpg'#10'caption top'#10'subcaption  '#10 + Tail));
+  AssertEquals(2, FDiag.Warnings);
+  AssertTrue(Pos('caption has no text', FDiag.Messages.Text) > 0);
+  AssertTrue(FPB.FrontCaption.Present);
+  AssertEquals('', FPB.FrontCaption.Text);
+  AssertEquals('', FPB.FrontSubcaption.Text);
+end;
+
+procedure TParserTests.SubcaptionHasNoPosition;
+begin
+  // everything after the keyword is the text, even a word that looks like a position
+  AssertNotNull(Parse('title T'#10'front f.jpg'#10'caption top A'#10'subcaption bottom B'#10 + Tail));
+  AssertEquals(0, FDiag.Warnings);
+  AssertEquals('bottom B', FPB.FrontSubcaption.Text);
 end;
 
 procedure TParserTests.ConfigOrderIsStrict;

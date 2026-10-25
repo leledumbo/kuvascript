@@ -47,8 +47,10 @@ A comment is a whole line that starts with `--`; blank lines are ignored.
 ```
 -- My trip to Semarang
 title My trip to Semarang
--- optional covers
-front cover.jpg
+-- optional covers, each with an optional caption and subcaption
+front crop TL cover.jpg
+caption bottom My trip to Semarang
+subcaption July 2024
 back last.jpg
 
 -- each page has 2 x 2 cells (1 to 3 each way)
@@ -72,8 +74,8 @@ pic IMG_0003.jpg
 
 The things to know:
 
-* **Order matters** at the top: `title`, then optionally `front` and `back`, then `layout`, `portrait`,
-  `landscape`.
+* **Order matters** at the top: `title`, then optionally `front` and `back` (each with its own optional
+  `caption` and `subcaption` right after it), then `layout`, `portrait`, `landscape`.
 * **Cells fill pages in order.** With a 2 x 2 layout every four `pic`/`text` lines make a page. The last page
   may be left short. A `chapter` takes a whole page, so it can only appear when the page before it is complete
   (kuvascript tells you how many cells are missing; use bare `text` lines to fill them).
@@ -147,10 +149,29 @@ The space between cells and around the edge of the page is decided by the **temp
 
 ### Covers
 
-`front` and `back` are plain pictures, scaled to fill the whole `rows x columns` area. With a front cover the book
-starts closed, showing the cover; opening it shows a blank inside page next to the first page, the way a printed
-book does. The back cover works the same way at the other end. Without them the book simply starts with its
-first page.
+`front` and `back` are plain pictures. A cover is cut to the size of **one cell** (the bigger of the portrait and
+landscape sizes in each direction), what a page with `layout rows 1 columns 1` would hold, whatever the layout is;
+the viewer then fits it to the page. Like `pic`, it takes `crop TL|TR|BL|BR|C` to say which part of the picture
+survives the cut:
+
+```
+front crop TL cover.jpg
+caption bottom Memory of Semarang
+subcaption July 2024
+back crop BR last.jpg
+caption middle Until next time
+```
+
+`caption` and `subcaption` write on the cover. A `caption` takes a position (`top`, `middle` or `bottom`) and then
+the text, with the same `\n` and `\\` escapes as everywhere else. A `subcaption` is just its text: the template
+draws it right below the caption in a smaller font, so it has no position of its own. A caption or subcaption
+without any text only earns a warning. A `caption` has to come directly after the `front` or `back` it belongs to, and a
+`subcaption` directly after a `caption`; anywhere else it is an error. The `title` is not drawn on the cover: it
+is the name of the book (browser tab and page header), the captions are what the cover says.
+
+With a front cover the book starts closed, showing the cover; opening it shows a blank inside page next to the
+first page, the way a printed book does. The back cover works the same way at the other end. Without them the
+book simply starts with its first page.
 
 ## The viewer
 
