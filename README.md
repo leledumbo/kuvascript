@@ -1,5 +1,7 @@
 # kuvascript
 
+[Example resulting photobook](https://github.com/user-attachments/assets/a4004e69-7bc7-48d0-93f7-5a7f31c511f1)
+
 **kuvascript** turns a folder of pictures and a small text file into a photobook you can open in any web
 browser: a book on screen, with pages you can drag, flip with the arrow keys, or jump around in by page number.
 
