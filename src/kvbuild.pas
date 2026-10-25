@@ -19,6 +19,7 @@ type
     Force: Boolean;         // re-render even if an up to date picture exists
     Quiet: Boolean;
     ConfTime: TDateTime;    // modification time of photobook.conf
+    Jobs: Integer;          // pictures rendered at the same time, 0 = one per available thread
   end;
 
   TKVBuildStats = record
@@ -28,6 +29,9 @@ type
 const
   KVHtmlName = 'pb.html';
   KVImageDir = 'images';
+
+{ Number of threads that can run at the same time here (at least 1). }
+function KVCpuCount: Integer;
 
 { Raises EKVImage or EInOutError on failure; warnings go to Diag. }
 function KVBuildBook(PB: TKVPhotobook; const Opt: TKVBuildOptions; Diag: TKVDiagnostics): TKVBuildStats;
@@ -40,6 +44,26 @@ function KVScriptSafe(const JSON: string): string;
 implementation
 
 type
+  TRenderJob = record
+    Path: string;       // as written in the conf, for messages
+    Source, Dest: string;
+    Rel: string;
+    W, H: Integer;
+    Anchor: TKVAnchor;
+  end;
+
+  TBuilder = class;
+
+  { Takes jobs off the builder's list until it is empty. }
+  TRenderWorker = class(TThread)
+  private
+    FOwner: TBuilder;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AOwner: TBuilder);
+  end;
+
   TBuilder = class
   private
     FPB: TKVPhotobook;
@@ -48,7 +72,11 @@ type
     FStats: TKVBuildStats;
     FDone: specialize TDictionary<string, string>;   // job key -> relative file
     FInfos: specialize TDictionary<string, TKVImageInfo>;
-    FTotal, FCount: Integer;
+    FJobs: array of TRenderJob;
+    FNext: Integer;            // next job to take, shared by the workers
+    FLock: TRTLCriticalSection;
+    FFailure: string;          // first error of any worker, '' = none
+    FStarted: Integer;
     function Info(const FullPath: string; Line: Integer): TKVImageInfo;
     function Render(const Path: string; Line: Integer; TW, TH: Integer;
       Anchor: TKVAnchor; const Prefix: string): string;
@@ -59,7 +87,9 @@ type
     function CoverToJSON(const Path: string; Line: Integer; Anchor: TKVAnchor;
       const Cap, Sub: TKVCaption): TJSONData;
     function BookToJSON: TJSONObject;
-    procedure CountJobs;
+    procedure RunJob(Index: Integer);
+    procedure RunJobs;
+    procedure WorkerLoop;
   public
     constructor Create(APB: TKVPhotobook; const AOpt: TKVBuildOptions; ADiag: TKVDiagnostics);
     destructor Destroy; override;
@@ -184,10 +214,12 @@ begin
   FDiag := ADiag;
   FDone := specialize TDictionary<string, string>.Create;
   FInfos := specialize TDictionary<string, TKVImageInfo>.Create;
+  InitCriticalSection(FLock);
 end;
 
 destructor TBuilder.Destroy;
 begin
+  DoneCriticalSection(FLock);
   FDone.Free;
   FInfos.Free;
   inherited Destroy;
@@ -210,10 +242,11 @@ begin
   end;
 end;
 
-{ Renders (or finds already rendered) Path as TW x TH; returns the file name
-  relative to the output folder. The file name carries a hash of everything
-  that influences the picture, so a file that exists is a file that is right,
-  as long as it is newer than its source. }
+{ Plans the rendering of Path as TW x TH and returns the file name relative to
+  the output folder. Nothing is rendered here: a picture that is not up to date
+  becomes a job, run later by RunJobs, possibly several at a time. The file name
+  carries a hash of everything that influences the picture, so a file that exists
+  is a file that is right, as long as it is newer than its source. }
 function TBuilder.Render(const Path: string; Line: Integer; TW, TH: Integer;
   Anchor: TKVAnchor; const Prefix: string): string;
 var
@@ -221,6 +254,7 @@ var
   SrcTime, DestTime: TDateTime;
   Hash: QWord;
   Inf: TKVImageInfo;
+  Job: TRenderJob;
 begin
   Full := KVResolvePath(FOpt.BaseDir, Path);
   Key := Format('%s|%dx%d|%s|q%d', [ExpandFileName(Full), TW, TH, KVAnchorName(Anchor), FOpt.Quality]);
@@ -230,7 +264,6 @@ begin
   Rel := KVImageDir + '/' + Prefix + SafeBase(Full) + '-' + LowerCase(IntToHex(Hash, 16)) + '.jpg';
   Dest := IncludeTrailingPathDelimiter(FOpt.OutDir) + Rel;
 
-  Inc(FCount);
   Inf := Info(Full, Line);
   if (Inf.Width < TW) or (Inf.Height < TH) then
     FDiag.Warn(Line, Format('%s is %dx%d, smaller than the %dx%d it is shown at; it will be enlarged',
@@ -242,10 +275,15 @@ begin
     Inc(FStats.Reused)
   else
   begin
-    if not FOpt.Quiet then
-      WriteLn(Format('[%d/%d] %s -> %s (%dx%d)', [FCount, FTotal, Path, Rel, TW, TH]));
-    KVRenderCover(Full, Dest, TW, TH, Anchor, FOpt.Quality);
-    Inc(FStats.Rendered);
+    Job.Path := Path;
+    Job.Source := Full;
+    Job.Dest := Dest;
+    Job.Rel := Rel;
+    Job.W := TW;
+    Job.H := TH;
+    Job.Anchor := Anchor;
+    SetLength(FJobs, Length(FJobs) + 1);
+    FJobs[High(FJobs)] := Job;
   end;
   FDone.Add(Key, Rel);
   Result := Rel;
@@ -355,32 +393,99 @@ begin
   Result := O;
 end;
 
-procedure TBuilder.CountJobs;
-var
-  I, J: Integer;
-  Seen: specialize TDictionary<string, Boolean>;
-  Page: TKVPage;
-  Cell: TKVCell;
+{ ---- rendering the planned pictures --------------------------------------- }
+
+function KVCpuCount: Integer;
 begin
-  // only for the "[n/total]" in the progress lines; a rough count is fine
-  Seen := specialize TDictionary<string, Boolean>.Create;
-  try
-    if FPB.Front <> '' then Seen.AddOrSetValue('front|' + KVAnchorName(FPB.FrontAnchor), True);
-    if FPB.Back <> '' then Seen.AddOrSetValue('back|' + KVAnchorName(FPB.BackAnchor), True);
-    for I := 0 to FPB.Pages.Count - 1 do
-    begin
-      Page := FPB.Page(I);
-      for J := 0 to High(Page.Cells) do
+  Result := TThread.ProcessorCount;
+  if Result < 1 then Result := 1;
+end;
+
+procedure TBuilder.RunJob(Index: Integer);
+var
+  Job: TRenderJob;
+begin
+  Job := FJobs[Index];
+  if not FOpt.Quiet then
+  begin
+    EnterCriticalSection(FLock);
+    try
+      Inc(FStarted);
+      WriteLn(Format('[%d/%d] %s -> %s (%dx%d)', [FStarted, Length(FJobs), Job.Path, Job.Rel, Job.W, Job.H]));
+      Flush(Output);
+    finally
+      LeaveCriticalSection(FLock);
+    end;
+  end;
+  KVRenderCover(Job.Source, Job.Dest, Job.W, Job.H, Job.Anchor, FOpt.Quality);
+end;
+
+{ Used by every worker (and by the main thread when there is just one). After a
+  failure the others stop taking new jobs, the pictures in flight are finished. }
+procedure TBuilder.WorkerLoop;
+var
+  I: Integer;
+begin
+  repeat
+    if FFailure <> '' then Exit;
+    I := InterlockedIncrement(FNext) - 1;
+    if I >= Length(FJobs) then Exit;
+    try
+      RunJob(I);
+    except
+      on E: Exception do
       begin
-        Cell := Page.Cells[J];
-        if Cell.Kind = ckPic then
-          Seen.AddOrSetValue(Cell.Path + '|' + KVAnchorName(Cell.Anchor), True);
+        EnterCriticalSection(FLock);
+        try
+          if FFailure = '' then FFailure := E.Message;
+        finally
+          LeaveCriticalSection(FLock);
+        end;
       end;
     end;
-    FTotal := Seen.Count;
-  finally
-    Seen.Free;
+  until False;
+end;
+
+constructor TRenderWorker.Create(AOwner: TBuilder);
+begin
+  FOwner := AOwner;
+  inherited Create(False);
+end;
+
+procedure TRenderWorker.Execute;
+begin
+  FOwner.WorkerLoop;
+end;
+
+procedure TBuilder.RunJobs;
+var
+  Count, I: Integer;
+  Workers: array of TRenderWorker;
+begin
+  if Length(FJobs) = 0 then Exit;
+  Count := FOpt.Jobs;
+  if Count <= 0 then Count := KVCpuCount;
+  if Count > Length(FJobs) then Count := Length(FJobs);
+  FNext := 0;
+  FStarted := 0;
+  FFailure := '';
+  if (Count > 1) and not FOpt.Quiet then
+    WriteLn(Format('rendering %d pictures with %d threads', [Length(FJobs), Count]));
+  if Count <= 1 then
+    WorkerLoop
+  else
+  begin
+    SetLength(Workers, Count);
+    for I := 0 to Count - 1 do
+      Workers[I] := TRenderWorker.Create(Self);
+    for I := 0 to Count - 1 do
+    begin
+      Workers[I].WaitFor;
+      Workers[I].Free;
+    end;
   end;
+  if FFailure <> '' then raise EKVImage.Create(FFailure);
+  FStats.Rendered := Length(FJobs);
 end;
 
 function TBuilder.BookToJSON: TJSONObject;
@@ -416,8 +521,7 @@ var
 begin
   FStats.Rendered := 0;
   FStats.Reused := 0;
-  FCount := 0;
-  CountJobs;
+  FJobs := nil;
   if not ForceDirectories(IncludeTrailingPathDelimiter(FOpt.OutDir) + KVImageDir) then
     raise EInOutError.CreateFmt('cannot create %s', [FOpt.OutDir]);
   Template := ReadWholeFile(FOpt.TemplateFile);
@@ -425,8 +529,9 @@ begin
     raise EInOutError.CreateFmt('%s is not a pbgen template (placeholders __TITLE__ and __BOOK_JSON__ missing)',
       [FOpt.TemplateFile]);
 
-  Book := BookToJSON;
+  Book := BookToJSON;   // plans the pictures too
   try
+    RunJobs;
     Html := KVFillTemplate(Template, FPB.Title, Book.AsJSON);
   finally
     Book.Free;

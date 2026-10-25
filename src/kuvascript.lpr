@@ -6,6 +6,7 @@ program kuvascript;
 {$mode objfpc}{$H+}
 
 uses
+  {$IFDEF UNIX}cthreads,{$ENDIF}
   SysUtils, Classes, kvtypes, kvparser, kvimage, kvbuild;
 
 const
@@ -19,7 +20,7 @@ const
 type
   TArgs = record
     InputDir, OutDir, Template: string;
-    Quality: Integer;
+    Quality, Jobs: Integer;
     Force, Quiet, CheckOnly, Help, ShowVersion: Boolean;
   end;
 
@@ -37,6 +38,8 @@ begin
   WriteLn('  -t, --template <file>   viewer template (default: template/viewer.html, found');
   WriteLn('                          next to or above the executable)');
   WriteLn('  -q, --quality <1-100>   JPEG quality of the rendered pictures (default 90)');
+  WriteLn('  -j, --jobs <n>          pictures to render at the same time (default 0: one per');
+  WriteLn('                          available thread, like make -j; 1 = one at a time)');
   WriteLn('  -f, --force             render every picture again');
   WriteLn('  -c, --check             only check photobook.conf and the files, write nothing');
   WriteLn('      --quiet             no progress output');
@@ -47,7 +50,7 @@ end;
 function ParseArgs(out A: TArgs): Boolean;
 var
   I: Integer;
-  S: string;
+  S, Tok: string;
 
   function Value(const Name: string): string;
   begin
@@ -66,6 +69,7 @@ begin
   A.OutDir := '';
   A.Template := '';
   A.Quality := 90;
+  A.Jobs := 0;
   A.Force := False;
   A.Quiet := False;
   A.CheckOnly := False;
@@ -83,6 +87,20 @@ begin
       if (A.Quality < 1) or (A.Quality > 100) then
       begin
         WriteLn(StdErr, 'kuvascript: quality must be a number from 1 to 100');
+        Exit(False);
+      end;
+    end
+    else if (S = '-j') or (S = '--jobs') or (Copy(S, 1, 7) = '--jobs=') or
+            ((Copy(S, 1, 2) = '-j') and (Length(S) > 2) and (S[3] in ['0'..'9'])) then
+    begin
+      // -j 4, -j4, --jobs 4 and --jobs=4
+      if Copy(S, 1, 7) = '--jobs=' then Tok := Copy(S, 8, MaxInt)
+      else if (Length(S) > 2) and (S[2] = 'j') then Tok := Copy(S, 3, MaxInt)
+      else Tok := Value(S);
+      A.Jobs := StrToIntDef(Tok, -1);
+      if A.Jobs < 0 then
+      begin
+        WriteLn(StdErr, 'kuvascript: jobs must be a whole number, 0 or more (0 = one per available thread)');
         Exit(False);
       end;
     end
@@ -223,6 +241,7 @@ begin
         else Opt.OutDir := BaseDir + 'output';
         Opt.TemplateFile := Template;
         Opt.Quality := A.Quality;
+        Opt.Jobs := A.Jobs;
         Opt.Force := A.Force;
         Opt.Quiet := A.Quiet;
         if FileAge(ConfFile, ConfTime) then Opt.ConfTime := ConfTime else Opt.ConfTime := 0;

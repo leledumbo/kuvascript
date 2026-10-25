@@ -20,6 +20,13 @@ photobook/                          output/
 
 It is written in Free Pascal and has no dependencies beyond the Free Pascal compiler itself.
 
+## The name
+
+*Kuva* is the Finnish word for picture, and *script* is, well, a script. Put together, kuvascript is a
+script for pictures: instead of dragging photos around in a layout editor, you write down how your photobook
+should look, in `photobook.conf`, and let the tool build it. A few plain lines (`pic`, `text`, `chapter`, a
+`layout`) are all the "programming" there is, and the same file always gives the same book.
+
 ## Quick start
 
 You need the [Free Pascal](https://www.freepascal.org/) compiler (`fpc`) and `make`.
@@ -110,7 +117,7 @@ photobook.conf:23: error: file not found: "IMG_0099.jpg"
    anchor. The result is saved as a JPEG named after the original plus a fingerprint of the settings
    (`IMG_0001-3fa91c0d65b1e2aa.jpg`), which is what makes later runs fast: a picture that is already there and
    newer than its source is left alone. Big photos are decoded at a fraction of their size when that is all
-   that is needed.
+   that is needed. Several pictures are rendered at the same time (see `-j`).
 4. **Write `pb.html`**: the viewer template, with the title and the whole book (a JSON description of pages,
    cells and picture files) filled in.
 
@@ -216,6 +223,8 @@ kuvascript [options] <directory>
   -t, --template <file>   viewer template (default template/viewer.html, found next to or above the
                           executable, or in ../share/kuvascript after `make install`)
   -q, --quality <1-100>   JPEG quality of the rendered pictures (default 90)
+  -j, --jobs <n>          pictures to render at the same time; 0 (the default) means one per available
+                          thread, like make -j; 1 renders one at a time. -jN and --jobs=N work too
   -f, --force             render every picture again
   -c, --check             only check photobook.conf and the files, write nothing
       --quiet             no progress output
@@ -257,8 +266,10 @@ tests/                 fpcunit tests
 
 * Output pictures are always JPEG. PNG input works, but transparency is dropped. Colour profiles are not
   converted: wide-gamut photos may look a little different from how your editor shows them.
-* Pictures are processed one after another, about one second for a 20 megapixel photo; a book of a hundred
-  photos takes a couple of minutes the first time and seconds afterwards.
+* A 20 megapixel photo takes about a second to prepare, and pictures are prepared in parallel (`-j`, by
+  default one per available thread): 130 such photos took 70 seconds on one thread and 6 seconds on 16. Later
+  runs only redo what changed, so they take seconds. Each thread holds one photo in memory at a time, so
+  use `-j 2` or so on a small machine. The result is the same whatever `-j` is.
 * Files in `images/` that are no longer used (after you change the book) are not deleted; remove the folder
   to start clean.
 

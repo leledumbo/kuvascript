@@ -16,9 +16,28 @@ type
     procedure TitleIsHtmlEscapedAndNotReexpanded;
     procedure JSONIsSafeInsideScript;
     procedure BuildsTheExample;
+    procedure ThreadsGiveTheSamePictures;
   end;
 
 implementation
+
+{ Deletes a folder written by KVBuildBook: pb.html and images/. }
+procedure RemoveBuild(const Dir: string);
+var
+  SR: TSearchRec;
+begin
+  if FindFirst(Dir + PathDelim + KVImageDir + PathDelim + '*', faAnyFile, SR) = 0 then
+  try
+    repeat
+      DeleteFile(Dir + PathDelim + KVImageDir + PathDelim + SR.Name);
+    until FindNext(SR) <> 0;
+  finally
+    FindClose(SR);
+  end;
+  RemoveDir(Dir + PathDelim + KVImageDir);
+  DeleteFile(Dir + PathDelim + KVHtmlName);
+  RemoveDir(Dir);
+end;
 
 procedure TBuildTests.TemplateFillsBothPlaceholders;
 begin
@@ -75,6 +94,7 @@ begin
       Opt.Force := False;
       Opt.Quiet := True;
       Opt.ConfTime := 0;
+      Opt.Jobs := 0;
       Stats := KVBuildBook(PB, Opt, Diag);
       AssertEquals(12, Stats.Rendered);
       // again: everything is up to date
@@ -124,6 +144,83 @@ begin
   finally
     Diag.Free;
     L.Free;
+    RemoveBuild(Out_);
+  end;
+end;
+
+{ One thread and several threads must write exactly the same files. }
+procedure TBuildTests.ThreadsGiveTheSamePictures;
+var
+  Diag: TKVDiagnostics;
+  PB: TKVPhotobook;
+  Opt: TKVBuildOptions;
+  Stats: TKVBuildStats;
+  Dir1, Dir4: string;
+  L: TStringList;
+  SR: TSearchRec;
+  A, B: TFileStream;
+  SA, SB: string;
+  Count: Integer;
+begin
+  Dir1 := GetTempDir + 'kvtests-j1-' + IntToStr(GetProcessID);
+  Dir4 := GetTempDir + 'kvtests-j4-' + IntToStr(GetProcessID);
+  L := TStringList.Create;
+  Diag := TKVDiagnostics.Create('photobook.conf');
+  try
+    L.LoadFromFile('examples/hello/photobook.conf');
+    PB := KVParse(L.Text, Diag);
+    AssertNotNull(PB);
+    try
+      Opt.BaseDir := ExpandFileName('examples/hello') + PathDelim;
+      Opt.TemplateFile := 'template/viewer.html';
+      Opt.Quality := 80;
+      Opt.Force := True;
+      Opt.Quiet := True;
+      Opt.ConfTime := 0;
+      Opt.OutDir := Dir1;
+      Opt.Jobs := 1;
+      Stats := KVBuildBook(PB, Opt, Diag);
+      AssertEquals(12, Stats.Rendered);
+      Opt.OutDir := Dir4;
+      Opt.Jobs := 4;
+      Stats := KVBuildBook(PB, Opt, Diag);
+      AssertEquals(12, Stats.Rendered);
+    finally
+      PB.Free;
+    end;
+
+    Count := 0;
+    if FindFirst(Dir1 + PathDelim + KVImageDir + PathDelim + '*', faAnyFile, SR) = 0 then
+    try
+      repeat
+        if (SR.Attr and faDirectory) <> 0 then Continue;
+        A := TFileStream.Create(Dir1 + PathDelim + KVImageDir + PathDelim + SR.Name, fmOpenRead);
+        B := TFileStream.Create(Dir4 + PathDelim + KVImageDir + PathDelim + SR.Name, fmOpenRead);
+        try
+          SetLength(SA, A.Size);
+          SetLength(SB, B.Size);
+          if A.Size > 0 then A.ReadBuffer(SA[1], A.Size);
+          if B.Size > 0 then B.ReadBuffer(SB[1], B.Size);
+          AssertTrue(SR.Name + ' differs between 1 and 4 threads', SA = SB);
+          Inc(Count);
+        finally
+          A.Free;
+          B.Free;
+        end;
+      until FindNext(SR) <> 0;
+    finally
+      FindClose(SR);
+    end;
+    AssertEquals(12, Count);
+    L.LoadFromFile(Dir1 + PathDelim + KVHtmlName);
+    SA := L.Text;
+    L.LoadFromFile(Dir4 + PathDelim + KVHtmlName);
+    AssertTrue('pb.html is the same', SA = L.Text);
+  finally
+    Diag.Free;
+    L.Free;
+    RemoveBuild(Dir1);
+    RemoveBuild(Dir4);
   end;
 end;
 
