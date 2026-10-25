@@ -1,0 +1,14 @@
+# build products
+/bin/
+/build/
+*.o
+*.ppu
+*.a
+*.compiled
+*.part
+
+# generated photobooks
+output/
+
+# private pictures used while developing
+/sample/
