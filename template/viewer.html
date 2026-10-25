@@ -1,0 +1,1115 @@
+<!doctype html>
+<!--
+  pbgen viewer template
+
+  Placeholders (replaced by the generator, plain string substitution):
+    __TITLE__      photobook title, HTML-escaped
+    __BOOK_JSON__  one JSON object (see below); the generator must escape "</" as "<\/"
+                   and U+2028/U+2029 so the JSON stays valid inside <script>
+
+  BOOK = {
+    title:     string,
+    rows:      1..3,
+    columns:   1..3,
+    portrait:  { width, height },   // cell size in px for portrait pictures
+    landscape: { width, height },   // cell size in px for landscape pictures
+    front:     { src, alt } | null, // optional covers, already page sized
+    back:      { src, alt } | null,
+    pages: [
+      // a page defined by `layout`; holds at most rows*columns cells, filled row by row
+      { kind: "grid", cells: [
+          { type: "pic",  src: "images/a.jpg", alt: "a",
+            orient: "portrait"|"landscape", crop: "TL"|"TR"|"BL"|"BR"|"C" },
+          { type: "text", text: "line one\nline two" },   // text: "" is a blank cell
+      ] },
+      // a page by itself
+      { kind: "chapter", text: "Introduction" },
+    ]
+  }
+
+  A grid cell is the bounding box of the portrait and landscape sizes; a picture is
+  centred in it at the size of its orientation. The page size (hence its aspect ratio)
+  follows from rows, columns, that cell box and the GAP / MARGIN set in the script below.
+  Escapes (\n, \\) are already resolved by the generator; "text" is used verbatim.
+
+  Page bend: everything about it sits between "BEND" markers, once in the CSS and once in
+  the script. Delete both blocks and the pages turn rigid; nothing else depends on them.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>__TITLE__ · Photobook</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f4efe7;
+        --muted: #a49d92;
+        --accent: #d6a56d;
+        --paper: #f1eadf;
+        --paper-ink: #4a4036;
+        --cover: #8a7660;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        min-height: 100%;
+      }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 50% 15%, #5d4d3833, transparent 36rem),
+          linear-gradient(135deg, #121214, #171719 50%, #111113);
+        font-family: Georgia, "Times New Roman", serif;
+        overflow-x: hidden;
+      }
+      body:before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.13;
+        background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.32'/%3E%3C/svg%3E");
+        mix-blend-mode: soft-light;
+      }
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        grid-template-columns: minmax(0, 1fr);
+        padding: clamp(22px, 4vw, 54px) clamp(18px, 5vw, 76px) 22px;
+      }
+      header,
+      footer {
+        width: min(100%, 1180px);
+        margin: auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .eyebrow {
+        margin: 0 0 7px;
+        color: var(--accent);
+        font: 600 10px system-ui;
+        letter-spacing: 0.23em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(24px, 3vw, 38px);
+        font-weight: 400;
+        letter-spacing: -0.025em;
+      }
+      .count,
+      footer {
+        color: var(--muted);
+        font: 12px system-ui;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      main {
+        width: 100%;
+        display: grid;
+        place-items: center;
+        padding: clamp(20px, 4vh, 56px) 0;
+      }
+
+      /* ---- the book ------------------------------------------------------
+         .stage  fixed viewport for the book (two pages wide, one when .single)
+         .book   2*--pw wide, spine in the middle, translated to centre the
+                 cover / back cover; carries the perspective
+         .leaf   one sheet of paper, hinged on the spine, front = right side,
+                 back = left side once turned                                  */
+      .stage {
+        --pw: min(43vw, 540px, max(180px, calc((100svh - 300px) * var(--ratio))));
+        position: relative;
+        width: calc(var(--pw) * 2);
+        height: calc(var(--pw) / var(--ratio));
+        margin: auto;
+        cursor: grab;
+        user-select: none;
+        -webkit-user-select: none;
+        touch-action: pan-y;
+      }
+      .stage.single {
+        --pw: min(88vw, 520px, max(180px, calc((100svh - 300px) * var(--ratio))));
+        width: var(--pw);
+        overflow: hidden;
+      }
+      .stage.dragging {
+        cursor: grabbing;
+      }
+      .book {
+        position: absolute;
+        inset: 0;
+        perspective: calc(var(--pw) * 4);
+        will-change: transform;
+      }
+      .stage.single .book {
+        inset: 0 auto 0 calc(var(--pw) * -1);
+        width: calc(var(--pw) * 2);
+      }
+      .board {
+        position: absolute;
+        top: -1.2%;
+        bottom: -1.2%;
+        width: 51.2%;
+        background: var(--cover);
+        will-change: opacity;
+        box-shadow:
+          0 2px #d3c2aa,
+          0 5px #655644,
+          0 22px 34px #0007;
+      }
+      .board.l {
+        left: -1.2%;
+        border-radius: 8px 2px 2px 8px;
+        opacity: 0;
+      }
+      .board.r {
+        left: 50%;
+        border-radius: 2px 8px 8px 2px;
+      }
+      .stage.single .board.l {
+        display: none;
+      }
+      .leaf {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        width: 50%;
+        height: 100%;
+        transform-origin: 0 50%;
+        transform-style: preserve-3d;
+        box-shadow: 0 0 calc(var(--pw) * 0.12) rgba(0, 0, 0, var(--cast, 0));
+      }
+      .face {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        border-radius: 2px 7px 7px 2px;
+        backface-visibility: hidden;
+        -webkit-backface-visibility: hidden;
+      }
+      .face.back {
+        transform: rotateY(180deg);
+      }
+      /* the paper is page sized and is what the content is laid out on */
+      .paper {
+        position: absolute;
+        inset: 0;
+        container-type: size;
+        background: var(--paper);
+      }
+      /* spine-side darkening; on the back face "left" is the spine as well,
+         because the whole face is mirrored */
+      .paper:before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        pointer-events: none;
+        background: linear-gradient(
+          90deg,
+          #28190a47,
+          #28190a14 4%,
+          transparent 11%,
+          transparent 93%,
+          #0000000d
+        );
+      }
+      /* turning shade, driven by the leaf angle */
+      .paper:after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        pointer-events: none;
+        background: #1a120a;
+        opacity: var(--shade, 0);
+      }
+      .crease {
+        position: absolute;
+        z-index: 9000;
+        top: 0;
+        bottom: 0;
+        left: calc(50% - 1.2%);
+        width: 2.4%;
+        pointer-events: none;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          #00000026 42%,
+          #00000047 50%,
+          #00000026 58%,
+          transparent
+        );
+      }
+      .stage.single .crease {
+        display: none;
+      }
+
+      /* ---- page content -------------------------------------------------- */
+      .sheet {
+        position: absolute;
+        inset: 0;
+      }
+      .sheet.grid {
+        display: grid;
+        grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+        grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+        gap: calc(var(--gap) * 1cqw);
+        padding: calc(var(--mar) * 1cqw);
+      }
+      .cell {
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .cell.pic {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .photo {
+        flex: none;
+        overflow: hidden;
+      }
+      .photo img,
+      .sheet.art img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        background: #d9d0c1;
+        -webkit-user-drag: none;
+      }
+      .cell.text {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1cqw;
+        text-align: center;
+        font-size: calc(var(--cw) * 0.1cqw);
+        line-height: 1.4;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--paper-ink);
+      }
+      .sheet.chapter {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6cqw;
+        padding: 12cqw;
+        text-align: center;
+        color: var(--paper-ink);
+      }
+      .sheet.chapter h2 {
+        margin: 0;
+        font-size: 8cqw;
+        font-weight: 400;
+        line-height: 1.15;
+        letter-spacing: -0.01em;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .sheet.chapter:after {
+        content: "";
+        width: 14cqw;
+        height: 1px;
+        background: #4a403699;
+      }
+      .folio {
+        position: absolute;
+        z-index: 2;
+        right: calc(var(--mar) * 1cqw);
+        bottom: calc(var(--mar) * 0.28cqw);
+        font-size: calc(var(--mar) * 0.26cqw);
+        color: #4a403699;
+        letter-spacing: 0.08em;
+      }
+
+      /* ==== BEND (css) =====================================================
+         Styles for the strips the BEND script cuts a turning leaf into.
+         Delete this block (and the BEND block in the script) for rigid pages. */
+      .stage {
+        --seam: 0.6px; /* strips overlap a hair so no crack shows between them */
+      }
+      .leaf.bent {
+        box-shadow: none;
+      }
+      .leaf.bent > .face {
+        display: none;
+      }
+      .strip {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: calc(var(--pw) / var(--strips) + var(--seam));
+        height: 100%;
+        transform-origin: 0 50%;
+        transform-style: preserve-3d;
+      }
+      /* the cast shadow only comes from the free edge, pushed outwards, so it
+         doesn't smear over the neighbouring strips */
+      .strip.last {
+        box-shadow: calc(var(--pw) * 0.035) 0 calc(var(--pw) * 0.07) calc(var(--pw) * -0.02)
+          rgba(0, 0, 0, var(--cast, 0));
+      }
+      .strip > .strip {
+        left: calc(100% - var(--seam));
+      }
+      .strip .face {
+        border-radius: 0;
+      }
+      .strip.first .face {
+        border-radius: 2px 0 0 2px;
+      }
+      .strip.last .face {
+        border-radius: 0 7px 7px 0;
+      }
+      .strip .paper {
+        inset: auto;
+        top: 0;
+        width: var(--pw);
+        height: 100%;
+      }
+      /* ==== end BEND (css) ============================================== */
+
+      /* ---- chrome -------------------------------------------------------- */
+      .hint {
+        text-align: center;
+        margin: 22px 0 0;
+        color: var(--muted);
+        font: 12px system-ui;
+        letter-spacing: 0.04em;
+      }
+      .controls {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 18px;
+        margin-top: 22px;
+      }
+      button {
+        border: 1px solid #d6a56d7a;
+        border-radius: 999px;
+        background: #17171980;
+        color: var(--ink);
+        width: 44px;
+        height: 36px;
+        cursor: pointer;
+        font: 18px Georgia;
+        transition:
+          background 0.18s,
+          color 0.18s,
+          transform 0.18s,
+          opacity 0.18s;
+      }
+      button:hover:not(:disabled),
+      button:focus-visible:not(:disabled) {
+        background: var(--accent);
+        color: #201811;
+        transform: translateY(-2px);
+        outline: 0;
+      }
+      button:disabled {
+        opacity: 0.25;
+        cursor: default;
+      }
+      .page-list {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 224px;
+        justify-content: center;
+      }
+      .page-button {
+        flex: 0 0 auto;
+        min-width: 24px;
+        height: 30px;
+        border: 0;
+        border-radius: 4px;
+        padding: 0 4px;
+        background: transparent;
+        color: #a49d92;
+        font: 12px system-ui;
+        white-space: nowrap;
+      }
+      .page-button:hover:not(:disabled),
+      .page-button:focus-visible:not(:disabled) {
+        background: #d6a56d33;
+        color: var(--ink);
+        transform: none;
+      }
+      .current-page {
+        display: flex;
+        align-items: center;
+        color: var(--accent);
+        font: 16px Georgia;
+      }
+      .current-page::before {
+        content: "[";
+      }
+      .current-page::after {
+        content: "]";
+      }
+      .page-input {
+        width: 4.2em;
+        height: 30px;
+        border: 0;
+        background: transparent;
+        color: var(--accent);
+        text-align: center;
+        font: 16px Georgia;
+        outline: none;
+      }
+      .page-input:focus {
+        background: #d6a56d22;
+        border-radius: 4px;
+      }
+      .caption {
+        color: #928b82;
+        max-width: 60%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      @media (max-width: 720px) {
+        .app {
+          padding-left: 14px;
+          padding-right: 14px;
+        }
+        .page-list {
+          min-width: 0;
+          gap: 0;
+        }
+        .controls {
+          gap: 8px;
+        }
+        .hint {
+          font-size: 11px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div>
+          <p class="eyebrow">A collection of moments</p>
+          <h1>__TITLE__</h1>
+        </div>
+        <div class="count" id="count" aria-live="polite"></div>
+      </header>
+      <main>
+        <div>
+          <div
+            class="stage"
+            id="stage"
+            role="group"
+            aria-label="Photobook. Drag a page, click either side, or use the arrow keys to turn pages."
+          >
+            <div class="book" id="book">
+              <div class="board l" id="board-l"></div>
+              <div class="board r" id="board-r"></div>
+              <div id="leaves"></div>
+              <div class="crease"></div>
+            </div>
+          </div>
+          <p class="hint">Drag a page or click either side · use ← → keys</p>
+          <div class="controls">
+            <button id="prev" type="button" aria-label="Previous page">←</button>
+            <div class="page-list" id="page-list" aria-label="Pages">
+              <input
+                class="page-input"
+                id="page-input"
+                type="text"
+                inputmode="numeric"
+                aria-label="Current page number"
+              />
+            </div>
+            <button id="next" type="button" aria-label="Next page">→</button>
+          </div>
+        </div>
+      </main>
+      <footer>
+        <span class="caption" id="caption"></span><span>made to linger</span>
+      </footer>
+    </div>
+    <script>
+      const BOOK = __BOOK_JSON__,
+        PAGES = BOOK.pages,
+        POS = {
+          TL: "left top",
+          TR: "right top",
+          BL: "left bottom",
+          BR: "right bottom",
+          C: "center",
+        },
+        /* spacing is the template's business: fractions of the shorter side
+           of a grid cell (so it scales with whatever resolution is configured) */
+        GAP = 0.05,
+        MARGIN = 0.09,
+        $ = (s) => document.querySelector(s),
+        stage = $("#stage"),
+        book = $("#book"),
+        host = $("#leaves"),
+        boardL = $("#board-l"),
+        boardR = $("#board-r"),
+        prevBtn = $("#prev"),
+        nextBtn = $("#next"),
+        countEl = $("#count"),
+        captionEl = $("#caption"),
+        pageList = $("#page-list"),
+        pageInput = $("#page-input"),
+        narrow = matchMedia("(max-width: 720px)"),
+        calm = matchMedia("(prefers-reduced-motion: reduce)"),
+        clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v)),
+        RAD = Math.PI / 180;
+
+      /* ---- page geometry -------------------------------------------------- */
+      const cellW = Math.max(BOOK.portrait.width, BOOK.landscape.width),
+        cellH = Math.max(BOOK.portrait.height, BOOK.landscape.height),
+        unit = Math.min(cellW, cellH),
+        gap = GAP * unit,
+        mar = MARGIN * unit,
+        pageW = BOOK.columns * cellW + (BOOK.columns - 1) * gap + 2 * mar,
+        pageH = BOOK.rows * cellH + (BOOK.rows - 1) * gap + 2 * mar;
+      for (const [k, v] of Object.entries({
+        rows: BOOK.rows,
+        cols: BOOK.columns,
+        ratio: pageW / pageH,
+        // the rest are in cqw, i.e. % of the page width
+        gap: (gap / pageW) * 100,
+        mar: (mar / pageW) * 100,
+        cw: (cellW / pageW) * 100,
+      }))
+        stage.style.setProperty("--" + k, v);
+
+      /* A face is one side of a leaf, described by {k: "page", i} | {k: "front"}
+         | {k: "back"} | {k: "blank"}. In spread mode a leaf carries two faces
+         (front = right page, back = left page once turned) and face 0 is alone
+         on the right when the book is closed. In single mode each leaf carries
+         one face and its back is blank.
+         A leaf's angle runs 0 (flat on the right) .. 180 (flat on the left).
+         `fT` is the number of leaves that are turned or turning; it changes the
+         instant a turn is requested, the animation catches up. */
+      let single, per, faces, leaves, maxF, fT, pw, raf, drag;
+
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+
+      function makeFaces() {
+        const pages = PAGES.map((_, i) => ({ k: "page", i })),
+          blank = { k: "blank" },
+          f = [];
+        if (single) {
+          if (BOOK.front) f.push({ k: "front" });
+          f.push(...pages);
+          if (BOOK.back) f.push({ k: "back" });
+          return f;
+        }
+        // the cover is followed by its blank inside, so page 1 lands on the right
+        if (BOOK.front) f.push({ k: "front" }, blank);
+        f.push(...pages);
+        // the back cover is preceded by its blank inside (right hand side)
+        if (BOOK.back) {
+          if (f.length % 2) f.push(blank);
+          f.push(blank, { k: "back" });
+        }
+        return f;
+      }
+
+      function art(c) {
+        const s = el("div", "sheet art"),
+          img = el("img");
+        img.src = c.src;
+        img.alt = c.alt || "";
+        img.draggable = false;
+        img.decoding = "async";
+        s.append(img);
+        return s;
+      }
+
+      function sheet(idx) {
+        const page = PAGES[idx],
+          face = el("div", "sheet");
+        if (page.kind === "chapter") {
+          face.className = "sheet chapter";
+          face.append(el("h2", "", page.text));
+          return face;
+        }
+        face.className = "sheet grid";
+        for (const c of page.cells) {
+          if (c.type === "pic") {
+            const o = c.orient === "landscape" ? BOOK.landscape : BOOK.portrait,
+              cell = el("div", "cell pic"),
+              photo = el("div", "photo"),
+              img = el("img");
+            photo.style.width = (o.width / cellW) * 100 + "%";
+            photo.style.height = (o.height / cellH) * 100 + "%";
+            img.src = c.src;
+            img.alt = c.alt || "";
+            img.draggable = false;
+            img.decoding = "async";
+            img.style.objectPosition = POS[c.crop] || POS.C;
+            photo.append(img);
+            cell.append(photo);
+            face.append(cell);
+          } else face.append(el("div", "cell text", c.text));
+        }
+        face.append(el("span", "folio", idx + 1));
+        return face;
+      }
+
+      function paper(desc) {
+        const p = el("div", "paper");
+        if (desc && desc.k === "page") p.append(sheet(desc.i));
+        else if (desc && desc.k === "front") p.append(art(BOOK.front));
+        else if (desc && desc.k === "back") p.append(art(BOOK.back));
+        return p;
+      }
+
+      function fill(l) {
+        if (l.filled) return;
+        l.filled = true;
+        l.front.append(paper(faces[l.i * per]));
+        l.back.append(paper(per === 2 ? faces[l.i * 2 + 1] : null));
+      }
+
+      function apply(l) {
+        const s = Math.sin(l.deg * RAD),
+          e = l.el;
+        e.style.transform = l.deg ? "rotateY(" + -l.deg + "deg)" : "";
+        e.style.zIndex = l.deg < 90 ? 2000 - l.i : 1000 + l.i;
+        e.style.setProperty("--shade", (0.32 * s).toFixed(3));
+        e.style.setProperty("--cast", (0.55 * s).toFixed(3));
+        if (typeof bend !== "undefined") bend.pose(l);
+      }
+
+      /* book translation (centres the lone cover / back cover) and boards */
+      function decor() {
+        if (single) return;
+        let p = 0;
+        for (const l of leaves) p += l.deg / 180;
+        const even = faces.length % 2 === 0,
+          start = clamp(p, 0, 1),
+          end = even ? clamp(p - (leaves.length - 1), 0, 1) : 0;
+        book.style.transform =
+          "translateX(" + (pw / 2) * (end - (1 - start)) + "px)";
+        boardL.style.opacity = start;
+        boardR.style.opacity = even ? clamp(leaves.length - p, 0, 1) : 1;
+      }
+
+      /* leaves that are far away are hidden, near ones are filled in ahead
+         of time so the images are decoded before they are turned over */
+      function refreshLeaves() {
+        for (const l of leaves) {
+          const d = l.i - fT,
+            show = (d >= -3 && d <= 3) || l.anim || l === (drag && drag.leaf);
+          if (show !== l.shown) {
+            l.shown = show;
+            l.el.hidden = !show;
+            l.el.style.willChange = show ? "transform" : "";
+          }
+          if (d >= -4 && d <= 4) fill(l);
+        }
+      }
+
+      /* faces visible when `f` leaves are turned */
+      function visible(f) {
+        if (single) return [f];
+        const r = [];
+        if (f > 0) r.push(2 * f - 1);
+        if (2 * f < faces.length) r.push(2 * f);
+        return r;
+      }
+      function label(f) {
+        const t = visible(f)
+          .map((i) => faces[i])
+          .map((d) => (d.k === "page" ? d.i + 1 : d.k === "front" ? "Cover" : d.k === "back" ? "Back" : ""))
+          .filter((x) => x !== "");
+        return t.length ? t.join("–") : "·";
+      }
+
+      function refreshUI() {
+        const vis = visible(fT).map((i) => faces[i]),
+          pg = vis.filter((d) => d.k === "page");
+        countEl.textContent = label(fT) + " / " + PAGES.length;
+        let chapter = "";
+        for (let i = Math.max(...visible(fT)); i >= 0 && !chapter; i--)
+          if (faces[i].k === "page" && PAGES[faces[i].i].kind === "chapter")
+            chapter = PAGES[faces[i].i].text;
+        captionEl.textContent = chapter.replace(/\n/g, " ");
+        prevBtn.disabled = fT <= 0;
+        nextBtn.disabled = fT >= maxF;
+        if (document.activeElement !== pageInput) pageInput.value = label(fT);
+        const size = Math.min(narrow.matches ? 3 : 7, maxF + 1),
+          first = clamp(fT - (size >> 1), 0, maxF + 1 - size),
+          items = [];
+        for (let f = first; f < first + size; f++) {
+          if (f === fT) {
+            const cur = el("span", "current-page");
+            cur.append(pageInput);
+            items.push(cur);
+          } else {
+            const b = el("button", "page-button", label(f));
+            b.type = "button";
+            b.title = "Go to page " + label(f);
+            b.onclick = () => go(f);
+            items.push(b);
+          }
+        }
+        pageList.replaceChildren(...items);
+        try {
+          history.replaceState(
+            null,
+            "",
+            pg.length ? "#" + (pg[pg.length - 1].i + 1) : location.pathname + location.search,
+          );
+        } catch (e) {}
+      }
+
+      /* ---- animation ---------------------------------------------------- */
+      const easeInOut = (u) =>
+          u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2,
+        easeOut = (u) => 1 - Math.pow(1 - u, 3);
+
+      function flyTo(l, deg, delay, dur) {
+        if (!l.anim && l.deg === deg) return;
+        const flying = !!l.anim;
+        l.dir = deg > l.deg ? 1 : -1;
+        l.held = false;
+        l.anim = {
+          from: l.deg,
+          to: deg,
+          t0: performance.now() + delay,
+          // a leaf that is already moving keeps its momentum: no slow start
+          ease: flying ? easeOut : easeInOut,
+          dur: Math.max(1, dur * (0.35 + 0.65 * (Math.abs(deg - l.deg) / 180))),
+        };
+        kick();
+      }
+
+      function kick() {
+        if (!raf) raf = requestAnimationFrame(tick);
+      }
+
+      function tick(now) {
+        raf = 0;
+        let live = false,
+          ended = false;
+        for (const l of leaves) {
+          const a = l.anim;
+          if (!a) continue;
+          if (now >= a.t0) {
+            const u = clamp((now - a.t0) / a.dur, 0, 1);
+            l.deg = u < 1 ? a.from + (a.to - a.from) * a.ease(u) : a.to;
+            if (u === 1) {
+              l.anim = null;
+              l.dir = 0;
+              ended = true;
+            }
+            apply(l);
+            if (u === 1) continue;
+          }
+          live = true;
+        }
+        decor();
+        if (ended) refreshLeaves();
+        if (live) kick();
+      }
+
+      /* move to spread `f` (flips every leaf in between, staggered if far) */
+      function go(f, speed = 1) {
+        f = clamp(f, 0, maxF);
+        if (f === fT) return;
+        const old = fT,
+          n = Math.abs(f - old),
+          busy = leaves.reduce((c, l) => c + (l.anim ? 1 : 0), 0),
+          // the more pages are in the air, the faster the next one turns
+          dur = (calm.matches ? 1 : 720) * Math.max(0.45, 1 - 0.09 * busy) * speed,
+          step = n > 1 ? Math.min(60, 420 / (n - 1)) : 0;
+        fT = f;
+        for (let k = 0; k < n; k++)
+          flyTo(
+            leaves[f > old ? old + k : old - 1 - k],
+            f > old ? 180 : 0,
+            k * step,
+            dur,
+          );
+        refreshLeaves();
+        refreshUI();
+      }
+
+      /* ---- construction ------------------------------------------------- */
+      /* `at` is a face description to open the book at (null: the beginning) */
+      function build(at) {
+        single = narrow.matches;
+        per = single ? 1 : 2;
+        faces = makeFaces();
+        maxF = single ? faces.length - 1 : faces.length >> 1;
+        const idx = at
+          ? faces.findIndex((d) => d.k === at.k && d.i === at.i)
+          : 0;
+        fT = clamp(single ? idx : Math.ceil(idx / 2), 0, maxF);
+        stage.classList.toggle("single", single);
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+        drag = null;
+        leaves = Array.from({ length: Math.ceil(faces.length / per) }, (_, i) => {
+          const e = el("div", "leaf"),
+            front = el("div", "face front"),
+            back = el("div", "face back");
+          e.hidden = true;
+          e.append(front, back);
+          const l = {
+            i,
+            el: e,
+            front,
+            back,
+            deg: i < fT ? 180 : 0,
+            dir: 0,
+            held: false,
+            anim: null,
+            filled: false,
+            shown: false,
+          };
+          apply(l);
+          return l;
+        });
+        host.replaceChildren(...leaves.map((l) => l.el));
+        measure();
+        refreshLeaves();
+        refreshUI();
+        decor();
+      }
+
+      /* the page we are looking at, to reopen it after a layout change */
+      function where() {
+        const d = visible(fT)
+          .map((i) => faces[i])
+          .find((d) => d.k !== "blank");
+        return d || { k: "front" };
+      }
+
+      function measure() {
+        pw = book.offsetWidth / 2;
+      }
+      new ResizeObserver(() => {
+        measure();
+        decor();
+      }).observe(stage);
+      narrow.addEventListener("change", () => build(where()));
+
+      /* ---- dragging a page ---------------------------------------------- */
+      /* The grabbed point on the sheet stays under the pointer: with `a` the
+         distance of that point from the spine, cos(angle) follows the
+         horizontal pointer travel / a. */
+      stage.addEventListener("pointerdown", (e) => {
+        if (e.button > 0 || drag) return;
+        const r = book.getBoundingClientRect();
+        drag = {
+          id: e.pointerId,
+          x0: e.clientX,
+          y0: e.clientY,
+          spine: r.left + r.width / 2,
+          hist: [[e.clientX, e.timeStamp]],
+        };
+        stage.setPointerCapture(e.pointerId);
+      });
+
+      stage.addEventListener("pointermove", (e) => {
+        const d = drag;
+        if (!d || e.pointerId !== d.id || d.dead) return;
+        if (!d.leaf) {
+          const dx = e.clientX - d.x0;
+          if (Math.abs(dx) < 6) return;
+          // spread: the side that was grabbed decides; single: the direction
+          const dir = single ? (dx < 0 ? 1 : -1) : d.x0 >= d.spine ? 1 : -1,
+            l = leaves[dir > 0 ? fT : fT - 1];
+          if (!l || (dir > 0 ? fT >= maxF : fT <= 0)) {
+            d.dead = true;
+            return;
+          }
+          d.dir = dir;
+          d.leaf = l;
+          d.c0 = Math.cos(l.deg * RAD);
+          d.a = clamp(
+            single && dir < 0 ? pw * 0.8 : Math.abs(d.x0 - d.spine),
+            pw * 0.35,
+            pw,
+          );
+          l.anim = null;
+          l.dir = dir;
+          l.held = true;
+          stage.classList.add("dragging");
+          refreshLeaves();
+        }
+        const l = d.leaf;
+        d.hist.push([e.clientX, e.timeStamp]);
+        while (d.hist.length > 2 && e.timeStamp - d.hist[0][1] > 100)
+          d.hist.shift();
+        l.deg =
+          Math.acos(clamp(d.c0 + (e.clientX - d.x0) / d.a, -1, 1)) / RAD;
+        apply(l);
+        decor();
+      });
+
+      function release(e) {
+        const d = drag;
+        if (!d || e.pointerId !== d.id) return;
+        drag = null;
+        stage.classList.remove("dragging");
+        const l = d.leaf;
+        if (!l) {
+          // a tap, not a drag
+          if (
+            !d.dead &&
+            e.type === "pointerup" &&
+            Math.abs(e.clientX - d.x0) < 6 &&
+            Math.abs(e.clientY - d.y0) < 6
+          ) {
+            const x = e.clientX - stage.getBoundingClientRect().left,
+              right = single ? x > pw * 0.35 : e.clientX >= d.spine;
+            go(fT + (right ? 1 : -1));
+          }
+          return;
+        }
+        const h = d.hist,
+          [x1, t1] = h[0],
+          [x2, t2] = h[h.length - 1],
+          // pointer speed along the turning direction, px/ms
+          v = t2 > t1 ? (((x2 - x1) / (t2 - t1)) * d.dir) * -1 : 0,
+          done = d.dir > 0 ? l.deg / 180 : 1 - l.deg / 180,
+          complete = v > 0.45 || (v > -0.45 && done > 0.5),
+          speed = clamp(1.1 - Math.abs(v), 0.55, 1);
+        l.held = false;
+        if (e.type === "pointercancel" || !complete)
+          flyTo(l, d.dir > 0 ? 0 : 180, 0, 720 * speed);
+        else go(fT + d.dir, speed);
+        refreshLeaves();
+      }
+      stage.addEventListener("pointerup", release);
+      stage.addEventListener("pointercancel", release);
+
+      /* ---- controls ------------------------------------------------------ */
+      prevBtn.onclick = () => go(fT - 1);
+      nextBtn.onclick = () => go(fT + 1);
+
+      function goToPage(n) {
+        const idx = faces.findIndex((d) => d.k === "page" && d.i === n - 1);
+        if (idx >= 0) go(single ? idx : Math.ceil(idx / 2));
+      }
+      function jump() {
+        goToPage(Number.parseInt(pageInput.value, 10));
+        pageInput.value = label(fT);
+      }
+      pageInput.onfocus = () => pageInput.select();
+      pageInput.onchange = jump;
+      pageInput.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          jump();
+          pageInput.blur();
+        }
+      };
+      document.addEventListener("keydown", (e) => {
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
+        const k = e.key,
+          to =
+            k === "ArrowRight" || k === "PageDown" || k === " "
+              ? fT + 1
+              : k === "ArrowLeft" || k === "PageUp"
+                ? fT - 1
+                : k === "Home"
+                  ? 0
+                  : k === "End"
+                    ? maxF
+                    : null;
+        if (to === null || (k === " " && e.target.closest("button"))) return;
+        e.preventDefault();
+        go(to);
+      });
+
+      /* ==== BEND (script) ====================================================
+         Slices a leaf into strips while it is moving and folds the strips
+         against each other, so the free edge lags behind (or, while held,
+         leads) the spine edge. Delete this block (and the BEND block in the
+         CSS) for rigid pages. Core code only touches it through apply(). */
+      const bend = (() => {
+        const STRIPS = 6, // more = smoother curve, more DOM while a page turns
+          MAX = 38; // degrees between the spine edge and the free edge, at most
+        stage.style.setProperty("--strips", STRIPS);
+
+        function slice(l) {
+          const src = [l.front.firstElementChild, l.back.firstElementChild],
+            chain = [];
+          let parent = l.el;
+          for (let i = 0; i < STRIPS; i++) {
+            const s = el(
+              "div",
+              "strip" + (i ? "" : " first") + (i === STRIPS - 1 ? " last" : ""),
+            );
+            // the back side is mirrored, so strip i shows slice STRIPS-1-i there
+            [
+              ["front", i, "0px"],
+              ["back", STRIPS - 1 - i, "var(--seam)"],
+            ].forEach(([side, n, seam], k) => {
+              const f = el("div", "face " + side),
+                p = src[k].cloneNode(true);
+              p.style.left = "calc(var(--pw) * " + -n / STRIPS + " + " + seam + ")";
+              f.append(p);
+              s.append(f);
+            });
+            parent.append(s);
+            chain.push(s);
+            parent = s;
+          }
+          l.strips = chain;
+          l.curve = 0;
+          l.el.classList.add("bent");
+        }
+
+        function flatten(l) {
+          for (const s of l.strips) s.remove();
+          l.strips = null;
+          l.el.classList.remove("bent");
+        }
+
+        function pose(l) {
+          const moving = l.dir && l.deg > 0 && l.deg < 180;
+          if (!moving) {
+            if (l.strips) flatten(l);
+            return;
+          }
+          if (!l.strips) slice(l);
+          // held by a finger the free edge leads, in free flight it trails
+          const goal =
+            (l.held ? 1 : -1) * l.dir * MAX * Math.sin(l.deg * RAD);
+          l.curve += (goal - l.curve) * 0.3;
+          const step = (-l.curve / (STRIPS - 1)).toFixed(2);
+          for (let i = 1; i < STRIPS; i++)
+            l.strips[i].style.transform = "rotateY(" + step + "deg)";
+        }
+
+        return { pose };
+      })();
+      /* ==== end BEND (script) ============================================ */
+
+      const hash = Number.parseInt(location.hash.slice(1), 10);
+      build(hash > 0 ? { k: "page", i: hash - 1 } : null);
+    </script>
+  </body>
+</html>
