@@ -1,0 +1,125 @@
+# Syntax (ISO 14977 EBNF; "? ... ?" is a special sequence)
+
+photobook   = { gap }, config, { gap | page } ;
+config      = title, [ front ], [ back ], layout, portrait, landscape ;
+
+title       = line( "title", ws, text ) ;
+front       = line( "front", ws, path ) ;
+back        = line( "back", ws, path ) ;
+layout      = line( "layout", ws, "rows", ws, grid_dim, ws, "columns", ws, grid_dim ) ;
+portrait    = line( "portrait", ws, "width", ws, number, ws, "height", ws, number ) ;
+landscape   = line( "landscape", ws, "width", ws, number, ws, "height", ws, number ) ;
+
+page        = pic | text_cell | chapter ;
+pic         = line( "pic", ws, [ "crop", ws, anchor, ws ], path ) ;
+text_cell   = line( "text", [ ws, text ] ) ;
+chapter     = line( "chapter", ws, text ) ;
+
+gap         = blank | comment ;
+comment     = [ ws ], "--", { ? any character except CR, LF ? }, eol ;   (* no escapes here *)
+blank       = line( ) ;
+
+(* A statement occupies exactly one line: optional indentation,
+   the content, optional trailing whitespace, then end of line. *)
+line( x )   = [ ws ], x, [ ws ], eol ;
+
+anchor      = "TL" | "TR" | "BL" | "BR" | "C" ;
+grid_dim    = "1" | "2" | "3" ;
+number      = digit_nz, { digit } ;
+digit       = "0" | digit_nz ;
+digit_nz    = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+
+(* Free text always comes last on its line, so it needs no delimiter. *)
+path        = pchar_first, { pchar } ;
+pchar_first = ? any character except space, tab, CR, LF ? ;
+pchar       = ? any character except CR, LF ? ;
+
+text        = tchar_first, { tchar } ;
+tchar_first = ? any character except space, tab, CR, LF, '\' ? | escape ;
+tchar       = ? any character except CR, LF, '\' ? | escape ;
+escape      = '\n' | '\\' ;
+
+ws          = ( " " | "\t" ), { " " | "\t" } ;
+eol         = newline | ? end of input ? ;
+newline     = "\r\n" | "\n" | "\r" ;   (* lexer matches longest: "\r\n" is one newline *)
+
+# Semantics
+
+1. In layout, rows x columns each range from 1 to 3.
+2. portrait / landscape give the pixel size of a picture in that orientation.
+   A pic is portrait if its file is taller than wide, otherwise landscape; it is
+   scaled to cover that size and cropped as per crop.
+   portrait must be taller than wide and landscape wider than tall (else an error).
+   If neither size fits inside the other, the cell box is bigger than both and part of
+   it stays empty; this is only a warning, with a suggestion for a snug landscape size.
+   A grid cell is the bounding box of both sizes (max width x max height); a smaller
+   picture is centered in it. The page is rows x columns such cells plus spacing, so its
+   resolution and aspect ratio follow from layout, portrait and landscape.
+   Spacing between cells and around the page is decided by the template, not photobook.conf.
+3. path in pic, front and back must be an existing file, relative to the directory holding
+   photobook.conf. Paths are taken literally to the end of the line (spaces allowed,
+   no escapes, trailing whitespace trimmed).
+   front / back are optional covers, scaled to cover the rows x columns grid area
+   (width = columns x cell width, height = rows x cell height) and cropped at the center.
+   Without them the book has no cover and starts directly with its first page.
+4. crop picks which part of the picture is kept when it doesn't fit the cell:
+   TL = top left, TR = top right, BL = bottom left, BR = bottom right, C = center.
+   Defaults to C if omitted.
+   Disambiguation: if the path part starts with "crop", ws, anchor, ws, it is read
+   as a crop prefix (a file literally named like that must be given as ./crop TL x).
+5. In text, "\n" is a line break and "\\" is a literal backslash. Any other
+   backslash sequence is an error. Leading and trailing whitespace is not part of the text.
+   This applies to title, text and chapter (comments are taken literally).
+6. A bare "text" is an empty cell (e.g. a place to sign when printed).
+7. Comments and blank lines are ignored; they never start a new page.
+8. A chapter occupies a whole page by itself. It may only appear when the
+   preceding page is complete (or at the very start). Otherwise it is an error
+   stating how many more pic/text entries are needed, e.g.:
+   line 12: chapter found on a partly filled page (4 of 6 cells); 2 more pic/text needed before it.
+   Use bare "text" lines to fill remaining cells with blanks.
+9. pic and text each define a single cell entry, and cells fill pages following layout.
+   for example, if layout is rows 2 columns 3, then each page contains 6 pic or text, like so:
+   pic f1.jpg
+   pic f2.jpg
+   pic f3.jpg
+   pic f4.jpg
+   pic f5.jpg
+   pic f6.jpg
+   pic f7.jpg
+   text something
+   text else
+   pic crop TL f8.jpg
+   text again
+   pic f9.jpg
+
+   with a well written equivalent of:
+   -- page 1
+   pic f1.jpg
+   pic f2.jpg
+   pic f3.jpg
+   pic f4.jpg
+   pic f5.jpg
+   pic f6.jpg
+   -- page 2
+   pic f7.jpg
+   text something
+   text else
+   pic crop TL f8.jpg
+   text again
+   pic f9.jpg
+
+   or, with chapters:
+   chapter introduction
+   pic f1.jpg
+   pic f2.jpg
+   pic f3.jpg
+   pic f4.jpg
+   pic f5.jpg
+   pic f6.jpg
+   chapter main attraction
+   pic f7.jpg
+   text something
+   text else
+   pic crop TL f8.jpg
+   text again
+   pic f9.jpg
