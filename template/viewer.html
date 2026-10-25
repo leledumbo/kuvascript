@@ -881,7 +881,7 @@
           u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2,
         easeOut = (u) => 1 - Math.pow(1 - u, 3);
 
-      function flyTo(l, deg, delay, dur) {
+      function flyTo(l, deg, delay, dur, ease) {
         if (!l.anim && l.deg === deg) return;
         const flying = !!l.anim;
         l.dir = deg > l.deg ? 1 : -1;
@@ -891,7 +891,7 @@
           to: deg,
           t0: performance.now() + delay,
           // a leaf that is already moving keeps its momentum: no slow start
-          ease: flying ? easeOut : easeInOut,
+          ease: ease || (flying ? easeOut : easeInOut),
           dur: Math.max(1, dur * (0.35 + 0.65 * (Math.abs(deg - l.deg) / 180))),
         };
         kick();
@@ -927,7 +927,7 @@
       }
 
       /* move to spread `f` (flips every leaf in between, staggered if far) */
-      function go(f, speed = 1) {
+      function go(f, speed = 1, ease) {
         f = clamp(f, 0, maxF);
         if (f === fT) return;
         const old = fT,
@@ -943,6 +943,7 @@
             f > old ? 180 : 0,
             k * step,
             dur,
+            ease,
           );
         refreshLeaves();
         refreshUI();
@@ -1091,9 +1092,12 @@
           complete = v > 0.45 || (v > -0.45 && done > 0.5),
           speed = clamp(1.1 - Math.abs(v), 0.55, 1);
         l.held = false;
+        // let go of a page and it keeps moving, no slow start from rest: with an
+        // ease-in the page hung around for a moment, which showed on a left swipe
+        // (the visible half of that turn is exactly the slow start)
         if (e.type === "pointercancel" || !complete)
-          flyTo(l, d.dir > 0 ? 0 : 180, 0, 720 * speed);
-        else go(fT + d.dir, speed);
+          flyTo(l, d.dir > 0 ? 0 : 180, 0, 720 * speed, easeOut);
+        else go(fT + d.dir, speed, easeOut);
         refreshLeaves();
       }
       stage.addEventListener("pointerup", release);
